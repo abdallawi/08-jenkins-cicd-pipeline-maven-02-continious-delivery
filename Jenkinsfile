@@ -7,7 +7,8 @@ pipeline{
         NEXUS_VERSION = "nexus3"
         NEXUS_PROTOCOL = "http"
         NEXUS_URL = "host.docker.internal:8081"
-        NEXUS_REPOSITORY = "mylocalrepo-snapshots"
+        NEXUS_REPOSITORY_SNAPSHOT = "mylocalrepo-snapshots"
+        NEXUS_REPOSITORY_RELEASE = "mylocalrepo-releases"
         NEXUS_CREDENTIAL_ID = "nexus-user-credentials"    
     }
     
@@ -16,7 +17,7 @@ pipeline{
         stage("Clone App from Git"){
             steps{
                 echo "====++++  Clone App from Git ++++===="
-                git branch:"master", url: "https://github.com/mromdhani/08-jenkins-cicd-pipeline-maven-02-continious-delivery.git"
+                git branch:"master", url: "https://github.com/mromdhani/08-jenkins-cicd-pipeline-maven-03-continious-deployment.git"
             }          
         }
         // Build and Unit Test (Maven/JUnit)
@@ -32,8 +33,9 @@ pipeline{
             steps{
                 echo "====++++  Static Code Analysis (SonarQube) ++++===="
                 withSonarQubeEnv('my_sonarqube_in_docker') {  
-                   sh "mvn clean verify -DskipITs=true sonar:sonar -Dsonar.host.url=http://host.docker.internal:9000   -Dsonar.projectName=08-jenkins-cicd-pipeline-maven-01-continious-integration -Dsonar.projectKey=08-jenkins-cicd-pipeline-maven-01-continious-integration -Dsonar.projectVersion=$BUILD_NUMBER";
-                }  
+                //   sh "mvn clean verify -DskipITs=true sonar:sonar -Dsonar.host.url=http://host.docker.internal:9000   -Dsonar.projectName=08-jenkins-cicd-pipeline-maven-01-continious-integration -Dsonar.projectKey=08-jenkins-cicd-pipeline-maven-01-continious-integration -Dsonar.projectVersion=$BUILD_NUMBER";
+                    sh "mvn clean package clean package -Dsurefire.skip=true sonar:sonar -Dsonar.host.url=http://host.docker.internal:9000   -Dsonar.projectName=08-jenkins-cicd-pipeline-maven-01-continious-integration -Dsonar.projectKey=08-jenkins-cicd-pipeline-maven-01-continious-integration -Dsonar.projectVersion=$BUILD_NUMBER";
+               }  
             }           
         }
         stage("Checking the Quality Gate") {
@@ -57,7 +59,7 @@ pipeline{
             }         
         }
        
-        // Publication de l'artifact (Snaphot) surt Nexus3
+        // Publication de l'artifact (Snaphot) sur Nexus3
         stage("Publish to Nexus Repository Manager") {
             steps {
                 echo "====++++  Publish to Nexus Repository Manager ++++===="
@@ -75,7 +77,7 @@ pipeline{
                             nexusUrl: NEXUS_URL,
                             groupId: pom.groupId,
                             version: pom.version,
-                            repository: NEXUS_REPOSITORY,
+                            repository: NEXUS_REPOSITORY_SNAPSHOT,
                             credentialsId: NEXUS_CREDENTIAL_ID,
                             artifacts: [
                                 [artifactId: pom.artifactId,
@@ -126,15 +128,83 @@ pipeline{
 	           perfReport sourceDataFiles: "$WORKSPACE/target/jmeter/results/*.csv"	     
 	        }
 	    }	    
-        // TODO : Promote the app On NEXUS from the SNAPHOT -> RELEASE
+        // Promote the app On NEXUS from the SNAPSHOT -> RELEASE
+        stage("Promote the app in  Nexus Repository Manager") {
+            steps {
+                echo "====++++  Promote the app in  Nexus Repository Manager ++++===="
+                sh "mv target/greetings-0.1-SNAPSHOT.war target/greetings-0.1-RELEASE.war"
+                script {
+                    pom = readMavenPom file: "pom.xml";
+                    filesByGlob = findFiles(glob: "target/*.${pom.packaging}");
+                    echo "${filesByGlob[0].name} ${filesByGlob[0].path} ${filesByGlob[0].directory} ${filesByGlob[0].length} ${filesByGlob[0].lastModified}"
+                    artifactPath = filesByGlob[0].path;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
+                    artifactVersion ="0.1-RELEASE-${BUILD_NUMBER}";  //Append the build number for traceability
+                    artifactExists = fileExists artifactPath;
+                    if(artifactExists) {
+                        echo "*** File: ${artifactPath}, group: ${pom.groupId}, packaging: ${pom.packaging}, version ${pom.version}";
+                        nexusArtifactUploader(
+                            nexusVersion: NEXUS_VERSION,
+                            protocol: NEXUS_PROTOCOL,
+                            nexusUrl: NEXUS_URL,
+                            groupId: pom.groupId,
+                            version: artifactVersion,
+                            repository: NEXUS_REPOSITORY_RELEASE,
+                            credentialsId: NEXUS_CREDENTIAL_ID,
+                            artifacts: [
+                                [artifactId: pom.artifactId,
+                                classifier: '',
+                                file: artifactPath,
+                                type: pom.packaging],
+                                [artifactId: pom.artifactId,
+                                classifier: '',
+                                file: "pom.xml",
+                                type: "pom"]
+                            ]
+                        );
+                    } else {
+                        error "*** File: ${artifactPath}, could not be found";
+                    }
+                }
+            }
+        }  
+
+        stage ('Start the Deployment  Server ') {
+	        steps {
+               echo "====++++  Start the Staging Server ++++===="
+	           sh "docker run --name deployment_server -p 9080:8080  -d tomcat:9.0"
+	        }
+	    }
+        
+        //Deploy the app on the Staging Server
+        stage ('Deploy the app on the Deployment Server ') {
+           // input {
+            //    message "Are you OK to proceed for application deployment ?"
+            //    ok "Yes, we should."
+             //   submitter "Me, the DevOps Engineer !"
+            //}            
+            steps {
+               // TODO  - GET THE war artifact from Nexus
+               echo "====++++  Deploy the war on the Deployment Server ++++===="
+
+	           sh "docker cp $WORKSPACE/target/greetings-0.1-RELEASE.war deployment_server:/usr/local/tomcat/webapps/hello.war"
+            }
+	    }     
         
         // STOP the Staging Server
-	    stage ('Clean Up : Stop the application under test') {	          
+	    stage ('Clean Up : Stop the Staging Server') {	          
            steps {
                echo "====++++ Stop the Staging Server ++++===="
 	           sh "docker stop   staging_server && docker rm  staging_server "
-               echo " STOPPED The the stagin server"
+               echo " STOPPED The the stagin server."
             }
 	    }
+          // STOP the Staging Server
+	   // stage ('Clean Up : Stop the Deployment Server') {	          
+        //   steps {
+        //       echo "====++++ Stop the Deployment Server ++++===="
+	    //       sh "docker stop   deployment_server && docker rm  deployment_server "
+        //       echo " STOPPED The the deployment_server server."
+         //   }
+	    //}	    
     }   
 }
